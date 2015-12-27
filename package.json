@@ -1,0 +1,14 @@
+{
+    "name": "scrape-disqualified-directors",
+    "private": true,
+    "dependencies": {
+        "highland": "2.5.x",
+        "request": "2.67.x",
+        "iconv-lite": "0.4.x",
+        "cheerio": "0.19.x",
+        "csv-write-stream": "1.0.x"
+    },
+    "scripts": {
+        "start": "node disqualified-directors"
+    }
+}
