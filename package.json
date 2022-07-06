@@ -1,14 +1,13 @@
 {
     "name": "scrape-disqualified-directors",
+    "type": "module",
     "private": true,
     "dependencies": {
-        "highland": "2.5.x",
-        "request": "2.67.x",
-        "iconv-lite": "0.4.x",
-        "cheerio": "0.19.x",
-        "csv-write-stream": "1.0.x"
-    },
-    "scripts": {
-        "start": "node disqualified-directors"
+        "axios": "0.27.x",
+        "cheerio": "1.0.0-rc.12",
+        "fs-extra": "10.1.x",
+        "html-to-text": "8.2.x",
+        "iconv-lite": "0.6.x",
+        "scramjet": "4.36.x"
     }
 }

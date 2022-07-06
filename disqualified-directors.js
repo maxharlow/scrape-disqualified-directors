@@ -1,74 +1,56 @@
-const highland = require('highland')
-const request = require('request')
-const iconv = require('iconv-lite')
-const cheerio = require('cheerio')
-const fs = require('fs')
-const csvWriter = require('csv-write-stream')
-const tls = require('tls')
+import FSExtra from 'fs-extra'
+import Axios from 'axios'
+import HTMLToText from 'html-to-text'
+import * as Cheerio from 'cheerio'
+import Scramjet from 'scramjet'
+import IconvLite from 'iconv-lite'
 
-tls.DEFAULT_CIPHERS = tls.DEFAULT_CIPHERS.replace('!RC4', 'RC4') // enable insecure rc4 cipher
-
-const http = highland.wrapCallback((location, callback) => {
-    request.defaults({ encoding: null })(location, (error, response) => {
-        const failure = error ? error : (response.statusCode >= 400) ? new Error(response.statusCode) : null
-        response.body = iconv.decode(new Buffer(response.body), 'windows-1252')
-        if (location.ignoreErrors) callback(null, response)
-        else callback(failure, response)
+async function cases() {
+    const response = await Axios('http://www.insolvencydirect.bis.gov.uk/IESdatabase/viewdirectorsummary-new.asp')
+    const document = Cheerio.load(response.data)
+    const urls = document('[href^=viewdisqualdetail]').get().map(element => {
+        return Cheerio.load(element)('*').attr('href').split('=').pop()
     })
-})
+    return [...new Set(urls)].filter(x => x)
+}
 
-const location = 'http://www.insolvencydirect.bis.gov.uk/IESdatabase/viewdirectorsummary-new.asp'
-
-function listing(response) {
-    const document = cheerio.load(response.body)
-    const listDetails = document('font:not([size])').filter((_, e) => cheerio(e).find('b').length == 4)
-    const listLink = document('a[href^=viewdisqualdetail]')
-    if (listDetails.length !== listLink.length) throw new Error('Details and link selectors are not working (' + listDetails.length + '/' + listLink.length + ')')
-    return listLink.get().map((entry, i) => {
+async function detail(caseNumber) {
+    console.log(`Fetching case ${caseNumber}...`)
+    const response = await Axios({
+        url: `https://www.insolvencydirect.bis.gov.uk/IESdatabase/viewdisqualdetail.asp?courtnumber=${caseNumber}`,
+        responseType: 'arraybuffer',
+        transformResponse: [
+            data => IconvLite.decode(data, 'windows-1252')
+        ]
+    })
+    const document = Cheerio.load(response.data)
+    const blocks = document('table:nth-of-type(2) td').html().split(/Case details .+/i)[1].split(/<hr\s*\/?>/i)[0].split(/<br\s*\/?>/i)
+    return blocks.filter(block => block.includes('Name')).map(block => {
+        const detailsText = HTMLToText.convert(Cheerio.load(block).html(), { wordwrap: false })
+        const details = detailsText.replace(/\s*\n\s*/g, '\n').replace(/[\xA0 ]+/g, ' ').trim().split('\n').map(line => {
+            return line.includes(':') ? line.slice(line.indexOf(': ') + 2) : line
+        })
         return {
-            name: listDetails.eq(i).contents().eq(1).text().replace(/\u00A0/g, ' ').replace(/ +/g, ' ').trim(),
-            company: listDetails.eq(i).find('p:nth-of-type(1)').text().replace('Company Name:', '').replace(/\/r\/n/g, ' ').trim(),
-            disqualificationLength: listDetails.eq(i).find('p:nth-of-type(2)').text().replace('Disqualification Length:', '').replace(/\u00A0/g, ' ').replace(/ +/g, ' ').trim(),
-            location: 'https://www.insolvencydirect.bis.gov.uk/IESdatabase/' + cheerio(entry).attr('href')
-            
+            caseNumber,
+            companyName: details[1],
+            personName: details[0],
+            dateOfBirth: details[2] === '/ /' ? null : details[2].replace(/ \/ /g, '/'),
+            dateOrderStarts: details[3].replace(/ \/ /g, '/'),
+            disqualificationLength: details[4],
+            // croNumber: details[5],
+            lastKnownAddress: details[6] === ', , , , ,' ? null : details[6].replace(/(, *)+/g, ', '),
+            informationCorrectAsOf: details.pop().replace('This information is correct as at ', '').replace(/ \/ /g, '/'),
+            conduct: details[7]
         }
     })
 }
 
-function detailLookup(entry) {
-    return {
-        url: entry.location,
-        entry: entry,
-        ignoreErrors: true
-    }
+function run() {
+    Scramjet.DataStream.from(cases())
+        .setOptions({ maxParallel: 1 })
+        .flatMap(detail)
+        .CSVStringify()
+        .pipe(FSExtra.createWriteStream('disqualified-directors.csv'))
 }
 
-function detail(response) {
-    const entry = response.request.entry
-    if (response.statusCode >= 404) return entry
-    const document = cheerio.load(response.body)
-    const name = document('td p:nth-of-type(1)').text().replace('Name:', '').replace(/\u00A0/g, ' ').replace(/ +/g, ' ').trim()
-    if (entry.name !== name) {
-        console.log('Ignoring details: entry "' + entry.name + '" links to page named "' + name + '"')
-        return entry
-    }
-    entry['company'] = document('td p:nth-of-type(2)').text().replace('Name:', '').replace(/\/r\/n/g, ' ').trim()
-    entry['birthDate'] = document('td p:nth-of-type(3)').text().replace('Date of Birth:', '').trim()
-    entry['orderStartDate'] = document('td p:nth-of-type(4)').text().replace('Date Order Starts:', '').trim()
-    entry['disqualificationLength'] = document('td p:nth-of-type(5)').text().replace('Disqualification Length:', '').replace(/\u00A0/g, ' ').replace(/ +/g, ' ').trim()
-    entry['croNumber'] = document('td p:nth-of-type(6)').text().replace('CRO Number:', '').trim()
-    entry['lastKnownAddress'] = document('td p:nth-of-type(7)').text().replace('Last Known Address:', '').trim()
-    entry['conduct'] = document('td p:nth-of-type(8)').text().replace('Conduct:', '').replace(/\r/g, '').replace(/\u00A0/g, ' ').replace(/ +/g, ' ').trim()
-    entry['lastUpdated'] = document('td p:nth-of-type(9)').text().replace('This information is correct as at', '').trim()
-    return entry
-}
-
-highland([location])
-    .flatMap(http)
-    .flatMap(listing)
-    .map(detailLookup)
-    .flatMap(http)
-    .map(detail)
-    .errors(e => console.log(e.stack))
-    .through(csvWriter())
-    .pipe(fs.createWriteStream('disqualified-directors.csv'))
+run()
